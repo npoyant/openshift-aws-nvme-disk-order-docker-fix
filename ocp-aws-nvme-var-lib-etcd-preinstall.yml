@@ -4,7 +4,7 @@
   vars:
     ocp_varlibetcd_storage_size: 50   # Define the size of the disk that you want to use for etcd storage
     ocp_varlibetcd_filesytem: xfs
-    ocp_lvm_enable: false
+    ocp_lvm_enable: true
     ocp_lvm_vg_name: vg-varlibetcd
     ocp_lvm_lv_name: lv-varlibetcd
   tasks:
