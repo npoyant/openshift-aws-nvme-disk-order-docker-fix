@@ -1,0 +1,78 @@
+---
+- name: Configure a persistent mount for /var/lib/etcd using nvme disks from AWS
+  hosts: masters
+  vars:
+    ocp_varlibetcd_storage_size: 50   # Define the size of the disk that you want to use for etcd storage
+    ocp_varlibetcd_filesytem: xfs
+    ocp_lvm_enable: false
+    ocp_lvm_vg_name: vg-varlibetcd
+    ocp_lvm_lv_name: lv-varlibetcd
+  tasks:
+
+  - name: Get disk for etcd Storage
+    shell: "lsblk | grep disk | grep {{ ocp_varlibetcd_storage_size }} |cut -f1 -d' '"
+    register: etcd_device
+
+  - name: Grab NVME Path from udevinfo info {{ etcd_device.stdout }}
+    shell: udevadm info /dev/{{ etcd_device.stdout }} | sed -n '3p' | sed 's/^.\{,14\}//'
+    register: NVME_PATH
+
+  #######
+  # LVM #
+  #######
+
+  - name: Configure etcd Storage with LVM Physical Volume (PV) and Volume Group (VG)
+    lvg:
+      vg: "{{ ocp_lvm_vg_name }}"
+      pvs: "/dev/{{ etcd_device.stdout }}"
+      state: present
+    when: ocp_lvm_enable
+
+  - name: Configure etcd Storage Logical Volume
+    lvg:
+      vg: "{{ ocp_lvm_vg_name }}"
+      lv: "{{ ocp_lvm_lv_name }}"
+      size: 100%FREE
+      state: present
+    when: ocp_lvm_enable
+
+  - name: Store path to logical volume
+    shell: "lvs --noheadings -o lv_path | grep {{ ocp_lvm_lv_name }}"
+    register: etcd_path
+    when: ocp_lvm_enable
+
+  - name: Put a filesystem on the logical volume
+    filesystem:
+      fstype: "{{ ocp_varlibetcd_filesytem }}"
+      dev: "{{ etcd_path.stdout }}"
+    when: ocp_lvm_enable
+
+  - name: Store Block UUID for the logical volume
+    shell: "blkid {{ etcd_path.stdout }}"
+    register: disk_uuid
+    when: ocp_lvm_enable
+
+##########
+# No LVM #
+##########
+
+  - name: Put a filesystem on raw disk (LVM disabled)
+    filesystem:
+      fstype: "{{ ocp_varlibetcd_filesytem }}"
+      dev: "/dev/{{ etcd_device.stdout }}"
+    when: not ocp_lvm_enable
+
+  - name: Store Block UUID for the raw disk (LVM disabled)
+    shell: "blkid /dev/{{ etcd_device.stdout }}"
+    register: disk_uuid
+    when: not ocp_lvm_enable
+
+#########
+# Mount #
+#########
+
+  - name: Mount the etcd disk and add to /etc/fstab
+    mount:
+      path: /var/lib/etcd
+      src: "{{ disk_uuid.stdout }}"
+      state: mounted

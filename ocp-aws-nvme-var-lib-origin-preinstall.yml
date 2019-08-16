@@ -1,0 +1,78 @@
+---
+- name: Configure a persistent mount for /var/lib/origin using nvme disks from AWS
+  hosts: all
+  vars:
+    ocp_varliborigin_storage_size: 101   # Define the size of the disk that you want to use for origin storage
+    ocp_varliborigin_filesytem: xfs
+    ocp_lvm_enable: false
+    ocp_lvm_vg_name: vg-varliborigin
+    ocp_lvm_lv_name: lv-varliborigin
+  tasks:
+
+  - name: Get disk for Origin Storage
+    shell: "lsblk | grep disk | grep {{ ocp_varliborigin_storage_size }} |cut -f1 -d' '"
+    register: origin_device
+
+  - name: Grab NVME Path from udevinfo info {{ origin_device.stdout }}
+    shell: udevadm info /dev/{{ origin_device.stdout }} | sed -n '3p' | sed 's/^.\{,14\}//'
+    register: NVME_PATH
+
+  #######
+  # LVM #
+  #######
+
+  - name: Configure Origin Storage with LVM Physical Volume (PV) and Volume Group (VG)
+    lvg:
+      vg: "{{ ocp_lvm_vg_name }}"
+      pvs: "/dev/{{ origin_device.stdout }}"
+      state: present
+    when: ocp_lvm_enable
+
+  - name: Configure Origin Storage Logical Volume
+    lvg:
+      vg: "{{ ocp_lvm_vg_name }}"
+      lv: "{{ ocp_lvm_lv_name }}"
+      size: 100%FREE
+      state: present
+    when: ocp_lvm_enable
+
+  - name: Store path to logical volume
+    shell: "lvs --noheadings -o lv_path | grep {{ ocp_lvm_lv_name }}"
+    register: origin_path
+    when: ocp_lvm_enable
+
+  - name: Put a filesystem on the logical volume
+    filesystem:
+      fstype: "{{ ocp_varliborigin_filesytem }}"
+      dev: "{{ origin_path.stdout }}"
+    when: ocp_lvm_enable
+
+  - name: Store Block UUID for the logical volume
+    shell: "blkid {{ origin_path.stdout }}"
+    register: disk_uuid
+    when: ocp_lvm_enable
+
+##########
+# No LVM #
+##########
+
+  - name: Put a filesystem on raw disk (LVM disabled)
+    filesystem:
+      fstype: "{{ ocp_varliborigin_filesytem }}"
+      dev: "/dev/{{ origin_device.stdout }}"
+    when: not ocp_lvm_enable
+
+  - name: Store Block UUID for the raw disk (LVM disabled)
+    shell: "blkid /dev/{{ origin_device.stdout }}"
+    register: disk_uuid
+    when: not ocp_lvm_enable
+
+#########
+# Mount #
+#########
+
+  - name: Mount the origin disk and add to /etc/fstab
+    mount:
+      path: /var/lib/origin
+      src: "{{ disk_uuid.stdout }}"
+      state: mounted
